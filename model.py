@@ -15,7 +15,7 @@ class Predictor:
             activation='sigmoid'
         )
         
-        model_path = os.path.join(os.path.dirname(__file__), 'model.pth')
+        model_path = os.path.join(os.path.dirname(__file__), 'autoencoder_model.pth')
         if os.path.exists(model_path):
             state_dict = torch.load(model_path, map_location=self.device)
             self.model.load_state_dict(state_dict)
