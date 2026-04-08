@@ -1,106 +1,55 @@
-import cv2
+import torch
 import numpy as np
-import matplotlib.pyplot as plt
+import cv2
+import segmentation_models_pytorch as smp
 import os
-import cv2
-import numpy as np
 
-def predict(image):
-    """Simple thresholding segmentation model using Saturation channel.
-
-    Args:
-        image: numpy array of shape (H, W, 3), uint8 RGB image.
-
-    Returns:
-        Binary mask as numpy array of shape (H, W), uint8 with values 0 or 255.
-    """
-    # Convert RGB to HSV color space
-    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-
-    # Extract ONLY the Saturation (S) channel
-    # White casing and dark background have very low saturation (close to 0).
-    # Colored insulators and copper have high saturation.
-    saturation = hsv[:, :, 1]
-
-    # Apply CLAHE to the saturation channel to boost the colors, especially copper
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    sat_clahe = clahe.apply(saturation)
-
-    # Apply stronger blurring to remove background noise
-    blurred = cv2.GaussianBlur(sat_clahe, (11, 11), 0)
-
-    # Threshold using Otsu's method on the Saturation channel
-    # This automatically ignores the white casing and background.
-    _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # Morphological operations to clean up the mask
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-    # --- BORDER CLEARING ---
-
-    # Create marker from image borders
-    marker = np.zeros_like(mask)
-    marker[0, :] = mask[0, :]
-    marker[-1, :] = mask[-1, :]
-    marker[:, 0] = mask[:, 0]
-    marker[:, -1] = mask[:, -1]
-
-    # Morphological reconstruction (iterative dilation)
-    kernel_small = np.ones((3, 3), np.uint8)
-
-    prev = np.zeros_like(marker)
-    curr = marker.copy()
-
-    while True:
-        dilated = cv2.dilate(curr, kernel_small)
-        curr = np.minimum(dilated, mask)
+class Predictor:
+    def __init__(self):
+        self.device = torch.device("cpu")
+        self.model = smp.Unet(
+            encoder_name="resnet34",
+            encoder_weights=None,
+            in_channels=3,
+            classes=1,
+            activation='sigmoid'
+        )
         
-        if np.array_equal(curr, prev):
-            break
-        prev = curr.copy()
-
-    # Remove border-connected objects
-    mask = cv2.subtract(mask, curr)
-
-    return mask
-
-
-if __name__ == "__main__":
-    # Define the output directory and create it if it doesn't exist
-    output_dir = "./cable/train/good_masks"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    for i in range(224):
-        filename = f"{i:03d}.png"
+        model_path = os.path.join(os.path.dirname(__file__), 'model.pth')
+        if os.path.exists(model_path):
+            state_dict = torch.load(model_path, map_location=self.device)
+            self.model.load_state_dict(state_dict)
         
-        input_path = f"./cable/train/good/{filename}"
-        output_path = f"{output_dir}/{filename}"
+        self.model.to(self.device)
+        self.model.eval()
+
+    def predict(self, image: np.ndarray) -> np.ndarray:
+        h, w = image.shape[:2]
         
-        image_bgr = cv2.imread(input_path)
+        img_res = cv2.resize(image, (256, 256))
+        img_res = img_res.astype(np.float32) / 255.0
         
-        if image_bgr is not None:
-            # Convert BGR to RGB
-            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        img_norm = (img_res - mean) / std
+        
+        img_input = img_norm.transpose(2, 0, 1)
+        input_tensor = torch.from_numpy(img_input).unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            output = self.model(input_tensor)
+            pred = output.squeeze().cpu().numpy()
             
-            mask = predict(image_rgb)
-            
-            cv2.imwrite(output_path, mask)
-        else:
-            print(f"Warning: Missing file {input_path}")
+        mask_256 = (pred > 0.5).astype(np.uint8)
+        
+        kernel = np.ones((3, 3), np.uint8)
+        mask_256 = cv2.erode(mask_256, kernel, iterations=1)
+        
+        mask_final = cv2.resize(mask_256, (w, h), interpolation=cv2.INTER_NEAREST)
+        
+        return (mask_final * 255).astype(np.uint8)
 
-        if i == 0:
-            break
-        #     # Display the first image and its mask for verification
-        #     plt.figure(figsize=(10, 5))
-        #     plt.subplot(1, 2, 1)
-        #     plt.title("Input Image")
-        #     plt.imshow(image_rgb)
-        #     plt.axis('off')
+_predictor = Predictor()
 
-        #     plt.subplot(1, 2, 2)
-        #     plt.title("Predicted Mask")
-        #     plt.imshow(mask, cmap='gray')
-        #     plt.axis('off')
-
-        #     plt.show()
+def predict(image: np.ndarray) -> np.ndarray:
+    return _predictor.predict(image)
