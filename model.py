@@ -53,3 +53,10 @@ _predictor = Predictor()
 
 def predict(image: np.ndarray) -> np.ndarray:
     return _predictor.predict(image)
+
+if __name__ == "__main__":
+    img = cv2.imread("cable/test/missing_wire/003.png")
+    mask = predict(img)
+    cv2.imshow("Mask", mask)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
